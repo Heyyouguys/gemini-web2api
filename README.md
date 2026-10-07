@@ -174,6 +174,8 @@ Create `config.json` in the same directory:
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,
+  "warp_enabled": false,
+  "warp_proxy": "socks5://127.0.0.1:40000",
   "log_requests": true,
   "temporary_chats": false
 }
@@ -229,7 +231,87 @@ export HTTPS_PROXY=http://127.0.0.1:7890
 python gemini_web2api.py
 ```
 
-Works with Clash, V2Ray, Shadowsocks, or any HTTP proxy.
+Supports HTTP and SOCKS5 proxies. For SOCKS5, install `pip install "httpx[socks]>=0.28"`.
+
+### Cloudflare WARP
+
+To address `User location is not supported for the API use`, route this project's
+outbound requests through WARP. Streaming, non-streaming, page tokens, image downloads
+and uploads all use the selected proxy. WARP does not let you choose a country, and
+Google may still reject its exit IP. Errors from a different application calling the
+Google API directly require configuring that application's proxy as well.
+
+On a Linux Docker host with `/dev/net/tun`, run (keep your existing config if present):
+
+```bash
+# First deployment only
+cp config.example.json config.json
+docker compose -f docker-compose.warp.yml up -d --build
+docker compose -f docker-compose.warp.yml exec gemini-web2api python -m gemini_web2api --check-warp
+```
+
+The Compose file runs [warp-docker](https://github.com/cmj2002/warp-docker), waits for
+`warp=on` or `warp=plus`, and connects the API to `socks5://warp:1080`. The proxy is
+only exposed inside Docker, and registration persists in the `warp-data` volume.
+If an API container with the same name already exists, stop it using `down` with its
+original Compose file before switching. To use cookies, add
+`./cookie.txt:/app/cookie.txt:ro` to the API volumes and set `cookie_file` accordingly.
+
+**Deploy from GitHub Packages**
+
+`.github/workflows/docker.yml` tests and publishes `linux/amd64` and `linux/arm64`
+images to GHCR on pushes to `main`, `v*` tags, or a manual workflow run. It uses
+`GITHUB_TOKEN` with `packages: write`; no Docker Hub credentials are required.
+This repository's default image is `ghcr.io/heyyouguys/gemini-web2api:latest`.
+`latest` updates on default-branch builds. Commit and push the WARP changes and
+wait for a successful build before using the published image for WARP deployments.
+
+Check package visibility after the first publication. Public images can be pulled
+anonymously; private images require `docker login ghcr.io` using a token with
+`read:packages`. With your configuration file already in place, deploy without
+building locally:
+
+```bash
+docker compose -f docker-compose.warp.yml pull
+docker compose -f docker-compose.warp.yml up -d --no-build
+docker compose -f docker-compose.warp.yml exec gemini-web2api python -m gemini_web2api --check-warp
+```
+
+For forks, the workflow publishes to `ghcr.io/<owner>/<repository>` (lowercase).
+Set `GEMINI_WEB2API_IMAGE` to override the Compose file's default image.
+
+For Python deployments, install the official WARP client separately and enable its
+local proxy mode:
+
+```bash
+warp-cli --accept-tos registration new
+warp-cli --accept-tos mode proxy
+warp-cli --accept-tos proxy port 40000
+warp-cli --accept-tos connect
+pip install -r requirements.txt
+python -m gemini_web2api --warp --check-warp
+python -m gemini_web2api --warp
+```
+
+Skip registration if already registered. The legacy `python gemini_web2api.py` entry
+point supports the same options. `--warp` connects to an existing proxy; it does not
+install or start the host's WARP client. Alternatively, set `"warp_enabled": true`
+and `"warp_proxy": "socks5://127.0.0.1:40000"` in your JSON configuration.
+
+Use `--warp --warp-proxy socks5://127.0.0.1:1080` for a custom endpoint, or set
+`GEMINI_WARP_ENABLED=true` and `GEMINI_WARP_PROXY=socks5://127.0.0.1:1080`.
+CLI options override environment variables, which override the config file. WARP
+mode selects `warp_proxy`; an explicit `--proxy` disables WARP mode and selects that
+proxy. Explicit proxies ignore `NO_PROXY` and never fall back to direct access on
+failure. `--check-warp` prints the exit IP/country and exits with a nonzero status
+if the proxy is unavailable or the exit is not using WARP.
+
+For diagnostics:
+
+```bash
+docker compose -f docker-compose.warp.yml logs --tail=100 warp
+docker compose -f docker-compose.warp.yml exec warp curl -fsS --socks5-hostname 127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace
+```
 
 ## Tool Calling
 

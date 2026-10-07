@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from .config import CONFIG
 from .gemini import load_cookie, make_sapisidhash, _get_ssl_ctx, log
+from .network import open_request
 
 
 def _get_page_tokens() -> dict:
@@ -24,16 +25,8 @@ def _get_page_tokens() -> dict:
         headers["Authorization"] = make_sapisidhash(sapisid)
     try:
         req = urllib.request.Request("https://gemini.google.com/app", headers=headers)
-        proxy = CONFIG.get("proxy")
-        if proxy:
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
-                urllib.request.HTTPSHandler(context=_get_ssl_ctx()),
-            )
-            resp = opener.open(req, timeout=30)
-        else:
-            resp = urllib.request.urlopen(req, context=_get_ssl_ctx(), timeout=30)
-        html = resp.read().decode()
+        with open_request(req, CONFIG, timeout=30, context=_get_ssl_ctx()) as resp:
+            html = resp.read().decode()
         tokens = {}
         for key, pattern in [
             ("push_id", r'"qKIAYe":"([^"]+)"'),
@@ -93,7 +86,6 @@ def upload_image(image_bytes: bytes, filename: str = "image.png", mime_type: str
 
     cookie_str, sapisid = load_cookie()
     ctx = _get_ssl_ctx()
-    proxy = CONFIG.get("proxy")
 
     # Step 1: Initiate resumable upload
     start_headers = {
@@ -115,18 +107,10 @@ def upload_image(image_bytes: bytes, filename: str = "image.png", mime_type: str
     start_url = "https://content-push.googleapis.com/upload/"
     req = urllib.request.Request(start_url, data=b"", headers=start_headers, method="POST")
 
-    if proxy:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
-            urllib.request.HTTPSHandler(context=ctx)
-        )
-        resp = opener.open(req, timeout=30)
-    else:
-        resp = urllib.request.urlopen(req, context=ctx, timeout=30)
-
-    upload_url = resp.headers.get("X-Goog-Upload-URL") or resp.headers.get("x-goog-upload-url")
-    if not upload_url:
-        raise RuntimeError(f"No upload URL in response headers: {dict(resp.headers)}")
+    with open_request(req, CONFIG, timeout=30, context=ctx) as resp:
+        upload_url = resp.headers.get("X-Goog-Upload-URL") or resp.headers.get("x-goog-upload-url")
+        if not upload_url:
+            raise RuntimeError(f"No upload URL in response headers: {dict(resp.headers)}")
 
     log(f"Upload session started: {upload_url[:80]}...")
 
@@ -139,12 +123,8 @@ def upload_image(image_bytes: bytes, filename: str = "image.png", mime_type: str
     }
 
     req2 = urllib.request.Request(upload_url, data=image_bytes, headers=upload_headers, method="POST")
-    if proxy:
-        resp2 = opener.open(req2, timeout=60)
-    else:
-        resp2 = urllib.request.urlopen(req2, context=ctx, timeout=60)
-
-    file_ref = resp2.read().decode().strip()
+    with open_request(req2, CONFIG, timeout=60, context=ctx) as resp2:
+        file_ref = resp2.read().decode().strip()
     if not file_ref or not file_ref.startswith("/"):
         raise RuntimeError(f"Invalid file reference: {file_ref[:100]}")
 
@@ -160,16 +140,8 @@ def fetch_image_bytes(url: str) -> bytes:
         return b""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        proxy = CONFIG.get("proxy")
-        if proxy:
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
-                urllib.request.HTTPSHandler(context=_get_ssl_ctx()),
-            )
-            resp = opener.open(req, timeout=30)
-        else:
-            resp = urllib.request.urlopen(req, context=_get_ssl_ctx(), timeout=30)
-        return resp.read()
+        with open_request(req, CONFIG, timeout=30, context=_get_ssl_ctx()) as resp:
+            return resp.read()
     except Exception as e:
         log(f"Image fetch failed: {e}")
         return b""

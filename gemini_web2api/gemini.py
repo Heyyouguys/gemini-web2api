@@ -16,6 +16,7 @@ except ImportError:
     HAS_HTTPX = False
 
 from .config import CONFIG
+from .network import create_httpx_client, open_request
 
 _ssl_ctx = None
 _cookie_cache = {"str": "", "sapisid": None, "mtime": 0}
@@ -39,9 +40,7 @@ def _get_ssl_ctx():
 def _get_httpx_client():
     global _httpx_client
     if _httpx_client is None and HAS_HTTPX:
-        proxy = CONFIG.get("proxy")
-        transport = httpx.HTTPTransport(proxy=proxy) if proxy else None
-        _httpx_client = httpx.Client(transport=transport, timeout=CONFIG["request_timeout_sec"], verify=True)
+        _httpx_client = create_httpx_client(CONFIG)
     return _httpx_client
 
 
@@ -208,21 +207,13 @@ def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None
     url = _get_url()
     headers = _build_headers()
     ctx = _get_ssl_ctx()
-    proxy = CONFIG.get("proxy")
 
     last_err = None
     for attempt in range(CONFIG["retry_attempts"]):
         try:
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            if proxy:
-                opener = urllib.request.build_opener(
-                    urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
-                    urllib.request.HTTPSHandler(context=ctx)
-                )
-                resp = opener.open(req, timeout=CONFIG["request_timeout_sec"])
-            else:
-                resp = urllib.request.urlopen(req, context=ctx, timeout=CONFIG["request_timeout_sec"])
-            raw = resp.read().decode("utf-8", errors="replace")
+            with open_request(req, CONFIG, timeout=CONFIG["request_timeout_sec"], context=ctx) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
             return extract_response_text(raw)
         except Exception as e:
             last_err = e

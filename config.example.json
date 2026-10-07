@@ -13,6 +13,8 @@
   ],
   "cookie_file": null,
   "proxy": null,
+  "warp_enabled": false,
+  "warp_proxy": "socks5://127.0.0.1:40000",
   "log_requests": true,
   "temporary_chats": false
 }

@@ -5,6 +5,7 @@ import os
 from .config import CONFIG, load_config, find_config
 from .models import MODELS
 from .gemini import HAS_HTTPX
+from .network import add_proxy_arguments, configure_proxy, get_proxy, check_warp
 from .server import GeminiHandler, ThreadedServer
 from . import __version__
 
@@ -14,7 +15,7 @@ def main():
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--cookie-file", type=str, default=None)
-    parser.add_argument("--proxy", type=str, default=None, help="HTTP proxy, e.g. http://127.0.0.1:7890")
+    add_proxy_arguments(parser)
     parser.add_argument("--version", action="version", version=f"gemini-web2api {__version__}")
     args = parser.parse_args()
 
@@ -26,8 +27,13 @@ def main():
         CONFIG["port"] = args.port
     if args.cookie_file:
         CONFIG["cookie_file"] = args.cookie_file
-    if args.proxy:
-        CONFIG["proxy"] = args.proxy
+    try:
+        configure_proxy(CONFIG, args)
+        if args.check_warp:
+            print(check_warp(CONFIG))
+            return
+    except Exception as exc:
+        parser.exit(1, f"Proxy/WARP error: {exc}\n")
 
     port = CONFIG["port"]
     server = ThreadedServer((CONFIG["host"], port), GeminiHandler)
@@ -36,7 +42,8 @@ def main():
     print(f"  Base URL:  http://localhost:{port}/v1")
     print(f"  Models:    {', '.join(MODELS.keys())}")
     print(f"  Cookie:    {'yes' if CONFIG.get('cookie_file') else 'none (anonymous)'}")
-    print(f"  Proxy:     {CONFIG.get('proxy') or 'system env'}")
+    print(f"  Proxy:     {get_proxy(CONFIG) or 'system env'}")
+    print(f"  WARP:      {'enabled' if CONFIG.get('warp_enabled') else 'disabled'}")
     print(f"  Streaming: {'httpx (true streaming)' if HAS_HTTPX else 'urllib (buffered)'}")
     print(f"  Temporary: {'yes' if CONFIG.get('temporary_chats', False) else 'no'}")
     print()

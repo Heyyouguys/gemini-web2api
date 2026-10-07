@@ -36,6 +36,10 @@ import binascii
 from typing import Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
+from gemini_web2api.network import (
+    add_proxy_arguments, configure_proxy, get_proxy, check_warp,
+    create_httpx_client, open_request,
+)
 
 try:
     import httpx
@@ -60,6 +64,8 @@ DEFAULT_CONFIG = {
     "log_requests": True,
     "cookie_file": None,
     "proxy": None,
+    "warp_enabled": False,
+    "warp_proxy": "socks5://127.0.0.1:40000",
     "api_keys": [],
     "temporary_chats": False,
 }
@@ -167,15 +173,8 @@ def fetch_latest_bl() -> Optional[str]:
             "https://gemini.google.com/app",
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
         ctx = ssl.create_default_context()
-        proxy = CONFIG.get("proxy")
-        if proxy:
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
-                urllib.request.HTTPSHandler(context=ctx))
-            resp = opener.open(req, timeout=15)
-        else:
-            resp = urllib.request.urlopen(req, context=ctx, timeout=15)
-        html = resp.read().decode("utf-8", errors="replace")
+        with open_request(req, CONFIG, timeout=15, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
         m = re.search(r'(boq_assistant-bard-web-server_\d+\.\d+_p\d+)', html)
         if m:
             return m.group(1)
@@ -198,6 +197,9 @@ def upload_images(images: list) -> list:
     """Upload parsed OpenAI image parts and return Gemini file references."""
     if not images:
         return None
+    # The legacy entry point owns its config; image helpers use the package config.
+    from gemini_web2api.config import CONFIG as package_config
+    package_config.update(CONFIG)
     from gemini_web2api.multimodal import detect_image_mime, fetch_image_bytes, upload_image
 
     file_refs = []
@@ -278,16 +280,8 @@ def gemini_stream_generate(prompt: str, model_id: int, think_mode: int, file_ref
         try:
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             ctx = ssl.create_default_context()
-            proxy = CONFIG.get("proxy")
-            if proxy:
-                opener = urllib.request.build_opener(
-                    urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
-                    urllib.request.HTTPSHandler(context=ctx)
-                )
-                resp = opener.open(req, timeout=CONFIG["request_timeout_sec"])
-            else:
-                resp = urllib.request.urlopen(req, context=ctx, timeout=CONFIG["request_timeout_sec"])
-            return resp.read().decode("utf-8", errors="replace")
+            with open_request(req, CONFIG, timeout=CONFIG["request_timeout_sec"], context=ctx) as resp:
+                return resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
             if e.code == 405 and update_bl_if_needed():
                 reqid = int(time.time()) % 1000000
@@ -363,8 +357,6 @@ def gemini_stream_generate_iter(prompt: str, model_id: int, think_mode: int, fil
     if sapisid:
         headers["Authorization"] = make_sapisidhash(sapisid)
 
-    proxy = CONFIG.get("proxy")
-
     if not HAS_HTTPX:
         # Fallback: non-streaming with urllib
         raw = gemini_stream_generate(prompt, model_id, think_mode, file_refs)
@@ -374,8 +366,7 @@ def gemini_stream_generate_iter(prompt: str, model_id: int, think_mode: int, fil
         return
 
     prev_text = ""
-    transport = httpx.HTTPTransport(proxy=proxy) if proxy else None
-    with httpx.Client(transport=transport, timeout=CONFIG["request_timeout_sec"], verify=True) as client:
+    with create_httpx_client(CONFIG) as client:
         try:
             with client.stream("POST", url, content=body, headers=headers) as resp:
                 resp.raise_for_status()
@@ -1058,7 +1049,7 @@ def main():
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--cookie-file", type=str, default=None, help="Path to cookie file")
-    parser.add_argument("--proxy", type=str, default=None, help="HTTP proxy, e.g. http://127.0.0.1:7890")
+    add_proxy_arguments(parser)
     parser.add_argument("--version", action="version", version=f"gemini-web2api {__version__}")
     args = parser.parse_args()
 
@@ -1074,8 +1065,13 @@ def main():
         CONFIG["port"] = args.port
     if args.cookie_file:
         CONFIG["cookie_file"] = args.cookie_file
-    if args.proxy:
-        CONFIG["proxy"] = args.proxy
+    try:
+        configure_proxy(CONFIG, args)
+        if args.check_warp:
+            print(check_warp(CONFIG))
+            return
+    except Exception as exc:
+        parser.exit(1, f"Proxy/WARP error: {exc}\n")
 
     new_bl = fetch_latest_bl()
     if new_bl:
@@ -1092,7 +1088,8 @@ def main():
     print(f"  Base URL:  http://localhost:{port}/v1")
     print(f"  Models:    {', '.join(MODELS.keys())}")
     print(f"  Cookie:    {'yes (' + CONFIG['cookie_file'] + ')' if CONFIG.get('cookie_file') else 'none (anonymous)'}")
-    print(f"  Proxy:     {CONFIG.get('proxy') or 'none (uses system env HTTP_PROXY/HTTPS_PROXY)'}")
+    print(f"  Proxy:     {get_proxy(CONFIG) or 'none (uses system env HTTP_PROXY/HTTPS_PROXY)'}")
+    print(f"  WARP:      {'enabled' if CONFIG.get('warp_enabled') else 'disabled'}")
     print(f"  Retry:     {CONFIG['retry_attempts']}x / {CONFIG['retry_delay_sec']}s")
     print(f"  BL:        {CONFIG['gemini_bl']}")
     print(f"  Temporary: {'yes' if CONFIG.get('temporary_chats', False) else 'no'}")

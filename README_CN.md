@@ -164,6 +164,8 @@ Pro 路由需要 **Gemini Advanced** (付费订阅). 免费 Google 账号的 coo
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,
+  "warp_enabled": false,
+  "warp_proxy": "socks5://127.0.0.1:40000",
   "log_requests": true,
   "temporary_chats": false
 }
@@ -219,7 +221,92 @@ set HTTPS_PROXY=http://127.0.0.1:7890
 python gemini_web2api.py
 ```
 
-支持 Clash, V2Ray, Shadowsocks 等任何 HTTP 代理.
+支持 HTTP、SOCKS5 代理。使用 SOCKS5 时安装 `pip install "httpx[socks]>=0.28"`。
+
+### WARP 出口
+
+遇到 `User location is not supported for the API use` 时，可以让本项目的出站请求通过
+Cloudflare WARP。流式生成、非流式生成、页面令牌获取、图片下载及上传都会使用同一个代理。
+WARP 不提供指定国家功能；Google 仍可能拒绝其出口 IP，因此启用 WARP 不保证消除地区错误。
+本项目访问 Gemini 网页接口，如果报错来自其他程序直连 Google API，也需要为那个程序单独配置代理。
+
+**Docker 部署（Linux 服务器）**
+
+确保服务器存在 `/dev/net/tun`，然后执行；已有 `config.json` 时保留原文件：
+
+```bash
+# 仅首次部署需要复制配置
+cp config.example.json config.json
+docker compose -f docker-compose.warp.yml up -d --build
+docker compose -f docker-compose.warp.yml exec gemini-web2api python -m gemini_web2api --check-warp
+```
+
+Compose 使用 [warp-docker](https://github.com/cmj2002/warp-docker) 镜像运行 WARP 客户端，
+等待 `warp=on` 或 `warp=plus` 后启动 API。WARP 代理仅在 Docker 网络内开放，注册信息保存在
+`warp-data` 卷中。API 容器通过 `socks5://warp:1080` 连接，不需要修改配置文件中的代理地址。
+已有同名 API 容器时，先用原来的 Compose 文件执行 `down` 再切换部署文件。
+如需 Cookie，在 API 服务的 `volumes` 中增加 `./cookie.txt:/app/cookie.txt:ro`，
+并设置 `"cookie_file": "/app/cookie.txt"`。
+
+**使用 GitHub Packages 镜像**
+
+`.github/workflows/docker.yml` 会在推送到 `main`、推送 `v*` 标签或手动运行时，
+先运行测试，再构建 `linux/amd64` 和 `linux/arm64` 镜像并推送到 GHCR。
+使用内置 `GITHUB_TOKEN` 和 `packages: write` 权限，无需另设 Docker Hub 密钥。
+本仓库默认镜像为 `ghcr.io/heyyouguys/gemini-web2api:latest`，其中 `latest` 随默认分支构建更新。
+WARP 代码需要提交并推送、且 Actions 构建成功后，发布镜像才会包含这个功能。
+
+首次发布后，在 GitHub Package 设置中检查可见性；公开镜像可直接拉取，私有镜像需要
+先用具有 `read:packages` 权限的令牌执行 `docker login ghcr.io`。
+服务器已有配置文件时，可以拉取发布镜像而无需本地构建：
+
+```bash
+docker compose -f docker-compose.warp.yml pull
+docker compose -f docker-compose.warp.yml up -d --no-build
+docker compose -f docker-compose.warp.yml exec gemini-web2api python -m gemini_web2api --check-warp
+```
+
+Fork 到其他仓库时，工作流会自动发布到 `ghcr.io/<仓库所有者>/<仓库名>`（小写）；
+部署时通过 `GEMINI_WEB2API_IMAGE` 环境变量覆盖 Compose 的默认镜像。
+
+**直接运行 Python（服务器已安装官方 WARP 客户端）**
+
+将客户端设为本地代理模式，再启动项目：
+
+```bash
+warp-cli --accept-tos registration new
+warp-cli --accept-tos mode proxy
+warp-cli --accept-tos proxy port 40000
+warp-cli --accept-tos connect
+pip install -r requirements.txt
+python -m gemini_web2api --warp --check-warp
+python -m gemini_web2api --warp
+```
+
+已有 WARP 注册时跳过 `registration new`。`python gemini_web2api.py` 同样支持这些参数。
+`--warp` 只让项目连接现有 WARP 代理；不会自动安装或启动宿主机客户端。
+也可以在 `config.json` 中设置：
+
+```json
+{
+  "warp_enabled": true,
+  "warp_proxy": "socks5://127.0.0.1:40000"
+}
+```
+
+自定义地址使用 `--warp --warp-proxy socks5://127.0.0.1:1080`，或环境变量
+`GEMINI_WARP_ENABLED=true`、`GEMINI_WARP_PROXY=socks5://127.0.0.1:1080`。
+优先级为命令行 > 环境变量 > 配置文件；启用 WARP 时使用 `warp_proxy`，
+显式传入 `--proxy` 则使用该代理并关闭 WARP 模式。显式代理不会被 `NO_PROXY` 绕过。
+代理不可用时请求报错，不会自动回退直连。检查命令输出出口 IP 和国家，
+`warp=off` 或连接失败时退出码非零。
+
+排查容器连接：
+
+```bash
+docker compose -f docker-compose.warp.yml logs --tail=100 warp
+docker compose -f docker-compose.warp.yml exec warp curl -fsS --socks5-hostname 127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace
+```
 
 ## 图片输入
 

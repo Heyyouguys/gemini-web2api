@@ -15,6 +15,8 @@ DEFAULT_CONFIG = {
     "log_requests": True,
     "cookie_file": None,
     "proxy": None,
+    "warp_enabled": False,
+    "warp_proxy": "socks5://127.0.0.1:40000",
     "api_keys": [],
     "temporary_chats": False,
 }
